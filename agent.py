@@ -9,6 +9,7 @@ from replay_memory import ReplayMemory
 from utils import save_pkl, load_pkl
 import tensorflow as tf
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 
 class Agent(BaseModel):
@@ -38,7 +39,7 @@ class Agent(BaseModel):
         print("------------")
         print(self.double_q)
         print("------------")
-        self.build_dqn()          
+        # self.build_dqn()          
         self.V2V_number = 3 * len(self.env.vehicles)    # every vehicle need to communicate with 3 neighbors  
         self.training = True
         #self.actions_all = np.zeros([len(self.env.vehicles),3], dtype = 'int32')
@@ -134,7 +135,7 @@ class Agent(BaseModel):
                         reward_train = self.env.act_for_training(self.action_all_with_power_training, [i,j]) 
                         state_new = self.get_state([i,j]) 
                         self.observe(state_old, state_new, reward_train, action)
-            if (self.step % 2000 == 0) and (self.step > 0):
+            if (self.step % 2 == 0) and (self.step > 0):
                 # testing 
                 self.training = False
                 number_of_game = 10
@@ -149,6 +150,7 @@ class Agent(BaseModel):
                     test_sample = 200
                     Rate_list = []
                     print('test game idx:', game_idx)
+                    pbar = tqdm(total = test_sample)
                     for k in range(test_sample):
                         action_temp = self.action_all_with_power.copy()
                         for i in range(len(self.env.vehicles)):
@@ -163,6 +165,8 @@ class Agent(BaseModel):
                                 reward, percent = self.env.act_asyn(action_temp) #self.action_all)            
                                 Rate_list.append(np.sum(reward))
                         #print("actions", self.action_all_with_power)
+                        pbar.set_description("Game Progress:")
+                        pbar.update()
                     V2I_Rate_list[game_idx] = np.mean(np.asarray(Rate_list))
                     Fail_percent_list[game_idx] = percent
                     #print("action is", self.action_all_with_power)
