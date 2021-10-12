@@ -1,6 +1,7 @@
 from __future__ import print_function, division
 import os
 import time
+import torch
 import random
 import copy
 import numpy as np
@@ -53,6 +54,11 @@ class QHD_Model(object):
         self.bias = np.array(self.bias)
         self.model = np.array(self.model)
         self.delay_model = copy.deepcopy(self.model)
+
+        self.s_hdvec = torch.from_numpy(self.s_hdvec)
+        self.bias = torch.from_numpy(self.bias)
+        self.model = torch.from_numpy(self.model)
+        self.delay_model = torch.from_numpy(self.delay_model)
         
         self.model_update_counter = 0
         self.tau = 1 # for cartpole 
@@ -61,6 +67,9 @@ class QHD_Model(object):
         self.logs.append((s,a,r,n_s))
         if len(self.logs) > 100000: # if the mem is full, POP
             self.logs.pop(0)
+
+    def update_delay_model(self):
+        self.delay_model = copy.deepcopy(self.model)
     
     def choose_action(self, observation): # observation should be numpy ndarray
         if (random.random() <= self.epsilon):
@@ -72,19 +81,19 @@ class QHD_Model(object):
             self.action = np.argmax(q_values)
         return self.action
 
-    def q_values(self, observation):
+    def q_values(self, observation, delay=False):
         q_values = list()
         for action in range(self.n_actions):
-            q_values.append(self.value(action, observation))
+            q_values.append(self.value(action, observation, delay))
         return q_values
     
     def value(self, action, observation, delay=False):
         ## Encoding
-        encoded = np.exp(1j* (np.matmul(observation, self.s_hdvec[action])+self.bias[action]))
+        encoded = torch.exp(1j* (observation @ self.s_hdvec[action])+self.bias[action])
         if delay == True:
-            q_value = np.real(np.matmul(np.conjugate(encoded), self.delay_model[action])/self.D)
+            q_value = torch.real(torch.conj(encoded) @ self.delay_model[action]/self.D)
         else:
-            q_value = np.real(np.matmul(np.conjugate(encoded), self.model[action])/self.D)
+            q_value = torch.real(torch.conj(encoded) @ self.model[action]/self.D)
         return q_value
     
     def feedback(self):
@@ -136,11 +145,12 @@ class QHD_Model(object):
                 for log in logs:
                     (obs, action, reward, next_obs) = log
                     y_pred = self.value(action, obs)
-                    q_list = []
-                    for a_ in range(self.n_actions):
-                        q_list.append(self.value(a_, next_obs, True))
+                    # q_list = []
+                    # for a_ in range(self.n_actions):
+                    #     q_list.append(self.value(a_, next_obs, True))
+                    q_list = self.q_values(next_obs, True)
                     y_true = reward + self.reward_decay*max(q_list)
-                    encoded = np.exp(1j* (np.matmul(obs, self.s_hdvec[action])+self.bias[action]))
+                    encoded = torch.exp(1j* ((obs @ self.s_hdvec[action])+self.bias[action]))
                     # model_size = np.linalg.norm(self.model[action])/self.D
                     # if model_size != 0:
                     #     print(action, model_size)
@@ -148,6 +158,22 @@ class QHD_Model(object):
                     #else:
                     self.model[action] += self.lr * (y_true-y_pred) * encoded
                     #print(y_true-y_pred)
+                    return 
+
+    def train_on_sample(self, obs, action, reward, next_obs):
+        y_pred = self.value(action, obs)
+        q_list = []
+        q_list = self.q_values(next_obs, True)
+        y_true = reward + self.reward_decay*max(q_list)
+        encoded = torch.exp(1j* ((obs @ self.s_hdvec[action])+self.bias[action]))
+        # model_size = np.linalg.norm(self.model[action])/self.D
+        # if model_size != 0:
+        #     print(action, model_size)
+        #    self.model[action] += self.lr * model_size * (y_true-y_pred) * encoded
+        #else:
+        self.model[action] += self.lr * (y_true-y_pred) * encoded
+        #print(y_true-y_pred)
+        return y_true-y_pred, y_true
 
 class Agent(BaseModel):
     def __init__(self, config, environment, sess):
@@ -226,7 +252,9 @@ class Agent(BaseModel):
         if random.random() < ep and test_ep == False:   # epsilon to balance the exporation and exploition
             action = np.random.randint(60)
         else:    
-            action = np.argmax(self.qhd_model.q_values(s_t))       
+            print('s_t Type:')
+            print(torch.from_numpy(s_t).type())
+            action = np.argmax(self.qhd_model.q_values(torch.from_numpy(s_t)))       
             # action =  self.q_action.eval({self.s_t:[s_t]})[0] 
         return action
     def observe(self, prestate, state, reward, action):
@@ -238,11 +266,11 @@ class Agent(BaseModel):
         if self.step > 0:
             if self.step % 50 == 0:
                 #print('Training')
-                self.q_learning_mini_batch()            # training a mini batch
-                self.save_weight_to_pkl()
+                self.q_learning_mini_batch_qhd()            # training a mini batch
+                # self.save_weight_to_pkl()
             if self.step % self.target_q_update_step == self.target_q_update_step - 1:
                 #print("Update Target Q network:")
-                self.update_target_q_network()           # ?? what is the meaning ??
+                self.update_target_qhd_model()           # ?? what is the meaning ??
     def train(self):        
         num_game, self.update_count, ep_reward = 0, 0, 0.
         total_reward, self.total_loss, self.total_q = 0.,0.,0.
@@ -278,7 +306,7 @@ class Agent(BaseModel):
                         reward_train = self.env.act_for_training(self.action_all_with_power_training, [i,j]) 
                         state_new = self.get_state([i,j]) 
                         self.observe(state_old, state_new, reward_train, action)
-            if (self.step % 2 == 0) and (self.step > 0):
+            if (self.step % 2000 == 0) and (self.step > 0):
                 # testing 
                 self.training = False
                 number_of_game = 10
@@ -308,7 +336,7 @@ class Agent(BaseModel):
                                 reward, percent = self.env.act_asyn(action_temp) #self.action_all)            
                                 Rate_list.append(np.sum(reward))
                         #print("actions", self.action_all_with_power)
-                        pbar.set_description("Game Progress:")
+                        pbar.set_description("Replay Progress:")
                         pbar.update()
                     V2I_Rate_list[game_idx] = np.mean(np.asarray(Rate_list))
                     Fail_percent_list[game_idx] = percent
@@ -323,7 +351,39 @@ class Agent(BaseModel):
                 #print('Test Reward is ', np.mean(test_result))
              
                   
-                    
+    def q_learning_mini_batch_qhd(self):
+
+        s_t, s_t_plus_1, action, reward = self.memory.sample()
+        # print('s_t shape:')
+        # print(s_t.shape)
+        # print('s_t_plus_1 shape:')
+        # print(s_t_plus_1.shape)
+        # print('action shape:')
+        # print(action.shape)
+        # print('reward shape:')
+        # print(reward.shape)
+
+        t = time.time()
+        losses = torch.zeros(2000)
+        qs = torch.zeros(2000)
+        if self.double_q:
+            # print('s_t_plus_1 Type:')
+            # print(torch.from_numpy(s_t_plus_1[0]).shape)
+            pbar = tqdm(total=2000)
+            for i in range(2000):
+
+                losses[i], qs[i] = self.qhd_model.train_on_sample(torch.from_numpy(s_t[i]).to(torch.float64), action[i], reward[i], torch.from_numpy(s_t_plus_1[i]).to(torch.float64))
+            
+                pbar.set_description("Training Progress:")
+                pbar.update()
+
+            print('loss is ', torch.mean(losses))
+            self.total_loss += torch.mean(losses)
+            self.total_q += torch.mean(qs)
+            self.update_count += 1
+        else:
+            pass
+
             
     def q_learning_mini_batch(self):
 
@@ -417,7 +477,8 @@ class Agent(BaseModel):
         tf.initialize_all_variables().run()
         self.update_target_q_network()
 
-
+    def update_target_qhd_model(self):
+        self.qhd_model.update_delay_model()
 
     def update_target_q_network(self):    
         for name in self.w.keys():
