@@ -184,6 +184,8 @@ class Agent(BaseModel):
         model_dir = './Model/a.model'
         self.memory = ReplayMemory(model_dir) 
         self.max_step = 100000
+        self.train_steps = 10_000
+        self.batch_size = 10
         self.RB_number = 20
         self.num_vehicle = len(self.env.vehicles)
         print('-------------------------------------------')
@@ -249,11 +251,13 @@ class Agent(BaseModel):
         # print(s_t.shape)
         # print("===================================")
         ep = 1/(step/1000000 + 1)
+        # if (step % 50 != 0):
+        #     print("epsilon = {0}".format(ep))
         if random.random() < ep and test_ep == False:   # epsilon to balance the exporation and exploition
             action = np.random.randint(60)
         else:    
-            print('s_t Type:')
-            print(torch.from_numpy(s_t).type())
+            # print('s_t Type:')
+            # print(torch.from_numpy(s_t).type())
             action = np.argmax(self.qhd_model.q_values(torch.from_numpy(s_t)))       
             # action =  self.q_action.eval({self.s_t:[s_t]})[0] 
         return action
@@ -263,14 +267,16 @@ class Agent(BaseModel):
         # ---------
         self.memory.add(prestate, state, reward, action) # add the state and the action and the reward to the memory
         #print(self.step)
+        l = "no loss"
         if self.step > 0:
             if self.step % 50 == 0:
                 #print('Training')
-                self.q_learning_mini_batch_qhd()            # training a mini batch
+                l = self.q_learning_mini_batch_qhd()            # training a mini batch
                 # self.save_weight_to_pkl()
             if self.step % self.target_q_update_step == self.target_q_update_step - 1:
                 #print("Update Target Q network:")
                 self.update_target_qhd_model()           # ?? what is the meaning ??
+            return l
     def train(self):        
         num_game, self.update_count, ep_reward = 0, 0, 0.
         total_reward, self.total_loss, self.total_q = 0.,0.,0.
@@ -281,7 +287,7 @@ class Agent(BaseModel):
         mean_not_big = 0
         number_not_big = 0
         self.env.new_random_game(20)
-        for self.step in (range(0, 10000)): # need more configuration
+        for self.step in (range(0, self.train_steps)): # need more configuration
             if self.step == 0:                   # initialize set some varibles
                 num_game, self.update_count,ep_reward = 0, 0, 0.
                 total_reward, self.total_loss, self.total_q = 0., 0., 0.
@@ -296,6 +302,8 @@ class Agent(BaseModel):
             #print("state", state_old)
             self.training = True
             for k in range(1):
+                if (self.step % 50 == 0 and self.step > 0):
+                    pbar = tqdm(total=len(self.env.vehicles))
                 for i in range(len(self.env.vehicles)):              
                     for j in range(3): 
                         state_old = self.get_state([i,j]) 
@@ -305,15 +313,19 @@ class Agent(BaseModel):
                         self.action_all_with_power_training[i, j, 1] = int(np.floor(action/self.RB_number))                                                    
                         reward_train = self.env.act_for_training(self.action_all_with_power_training, [i,j]) 
                         state_new = self.get_state([i,j]) 
-                        self.observe(state_old, state_new, reward_train, action)
+                        l = self.observe(state_old, state_new, reward_train, action)
+                    if (self.step % 50 == 0 and self.step > 0):
+                        pbar.set_description("Training Progress:")
+                        pbar.write("loss is {0}".format(l))
+                        pbar.update()
             if (self.step % 2000 == 0) and (self.step > 0):
                 # testing 
                 self.training = False
-                number_of_game = 10
-                if (self.step % 10000 == 0) and (self.step > 0):
-                    number_of_game = 50 
-                if (self.step == 38000):
-                    number_of_game = 100               
+                number_of_game = 5
+                # if (self.step % self.train_steps == 0) and (self.step > 0):
+                #     number_of_game = 50 
+                # if (self.step == 38000):
+                #     number_of_game = 100               
                 V2I_Rate_list = np.zeros(number_of_game)
                 Fail_percent_list = np.zeros(number_of_game)
                 for game_idx in range(number_of_game):
@@ -344,7 +356,7 @@ class Agent(BaseModel):
                     print('failure probability is, ', percent)
                     #print('action is that', action_temp[0,:])
             #print("OUT")
-                self.save_weight_to_pkl()
+                # self.save_weight_to_pkl()
                 print ('The number of vehicle is ', len(self.env.vehicles))
                 print ('Mean of the V2I rate is that ', np.mean(V2I_Rate_list))
                 print('Mean of Fail percent is that ', np.mean(Fail_percent_list))                   
@@ -364,23 +376,24 @@ class Agent(BaseModel):
         # print(reward.shape)
 
         t = time.time()
-        losses = torch.zeros(2000)
-        qs = torch.zeros(2000)
+        losses = torch.zeros(self.batch_size)
+        qs = torch.zeros(self.batch_size)
         if self.double_q:
             # print('s_t_plus_1 Type:')
             # print(torch.from_numpy(s_t_plus_1[0]).shape)
-            pbar = tqdm(total=2000)
-            for i in range(2000):
+            # pbar = tqdm(total=self.batch_size)
+            for i in range(self.batch_size):
 
                 losses[i], qs[i] = self.qhd_model.train_on_sample(torch.from_numpy(s_t[i]).to(torch.float64), action[i], reward[i], torch.from_numpy(s_t_plus_1[i]).to(torch.float64))
             
-                pbar.set_description("Training Progress:")
-                pbar.update()
+                # pbar.set_description("Training Progress:")
+                # pbar.update()
 
-            print('loss is ', torch.mean(losses))
+            # print('loss is ', torch.mean(losses))
             self.total_loss += torch.mean(losses)
             self.total_q += torch.mean(qs)
             self.update_count += 1
+            return torch.mean(losses)
         else:
             pass
 

@@ -12,7 +12,7 @@ class ReplayMemory:
         self.rewards = np.empty(self.memory_size, dtype = np.float64)
         self.prestate = np.empty((self.memory_size, 82), dtype = np.float16)
         self.poststate = np.empty((self.memory_size, 82), dtype = np.float16)
-        self.batch_size = 2000
+        self.batch_size = 10
         self.count = 0
         self.current = 0
         
