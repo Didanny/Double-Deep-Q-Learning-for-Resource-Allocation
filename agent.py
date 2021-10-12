@@ -2,6 +2,7 @@ from __future__ import print_function, division
 import os
 import time
 import random
+import copy
 import numpy as np
 from Environment import *
 from base import BaseModel
@@ -11,6 +12,142 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+class QHD_Model(object):
+    def __init__(self,
+                dimension=10000,
+                n_actions=2,
+                n_obs=4,
+                epsilon=1.0,
+                epsilon_decay=0.995,
+                minimum_epsilon=0.01,
+                reward_decay=0.9,
+                mem=70, #70#50#200
+                batch=20, #20#10#50
+                lr = 0.05#0.05 #0.035
+                ):
+        self.D = dimension
+        self.n_actions = n_actions
+        self.n_obs = n_obs
+        self.epsilon = epsilon
+        self.epsilon_decay = epsilon_decay
+        self.minimum_epsilon = minimum_epsilon
+        self.reward_decay = reward_decay
+        self.mem = mem
+        self.batch = batch
+        self.lr = lr
+        
+        self.logs = [] # temp log for current episode
+        self.episode_logs = [] # logs for past episodes
+        self.s_hdvec = []
+        self.bias = []
+        self.model = []
+        for a in range(n_actions):
+            tmp_hdvec = []
+            for n in range(self.n_obs):
+                tmp_hdvec.append(np.random.normal(0, 1, dimension))
+            tmp_hdvec = np.array(tmp_hdvec)
+            self.s_hdvec.append(tmp_hdvec)
+            self.bias.append(np.random.uniform(0,2*np.pi, size=dimension))
+            self.model.append(np.zeros(dimension, dtype=complex))
+        self.s_hdvec = np.array(self.s_hdvec)
+        self.bias = np.array(self.bias)
+        self.model = np.array(self.model)
+        self.delay_model = copy.deepcopy(self.model)
+        
+        self.model_update_counter = 0
+        self.tau = 1 # for cartpole 
+    
+    def store_transition(self, s, a, r, n_s):
+        self.logs.append((s,a,r,n_s))
+        if len(self.logs) > 100000: # if the mem is full, POP
+            self.logs.pop(0)
+    
+    def choose_action(self, observation): # observation should be numpy ndarray
+        if (random.random() <= self.epsilon):
+            self.action = random.randint(0, self.n_actions-1)
+        else:
+            q_values = list()
+            for action in range(self.n_actions):
+                q_values.append(self.value(action, observation))
+            self.action = np.argmax(q_values)
+        return self.action
+
+    def q_values(self, observation):
+        q_values = list()
+        for action in range(self.n_actions):
+            q_values.append(self.value(action, observation))
+        return q_values
+    
+    def value(self, action, observation, delay=False):
+        ## Encoding
+        encoded = np.exp(1j* (np.matmul(observation, self.s_hdvec[action])+self.bias[action]))
+        if delay == True:
+            q_value = np.real(np.matmul(np.conjugate(encoded), self.delay_model[action])/self.D)
+        else:
+            q_value = np.real(np.matmul(np.conjugate(encoded), self.model[action])/self.D)
+        return q_value
+    
+    def feedback(self):
+        ## Update the delayed model
+        self.model_update_counter += 1
+        if self.model_update_counter > self.tau:
+            self.delay_model = copy.deepcopy(self.model)
+            self.model_update_counter = 0
+
+        self.episode_logs.append(self.logs)
+        if len(self.episode_logs) > self.mem: # if the mem is full, POP
+            self.episode_logs.pop(0)
+
+        for iter in range(15): #15
+            if len(self.episode_logs) < self.batch:
+                indexs = list(range(len(self.episode_logs)))
+            else:
+                indexs = random.sample(list(range(len(self.episode_logs))), self.batch)
+            for i in indexs:
+                episode_logs = self.episode_logs[i]
+                if len(episode_logs) < 1:
+                    idx = list(range(len(episode_logs)))
+                else:
+                    idx = random.sample(list(range(len(episode_logs))), 1) + [len(episode_logs)-1]
+                for j in idx:
+                    log = episode_logs[j]
+                    (obs, action, reward, next_obs) = log
+                    y_pred = self.value(action, obs)
+                    q_list = []
+                    for a_ in range(self.n_actions):
+                        q_list.append(self.value(a_, next_obs, True))
+                    y_true = reward + self.reward_decay*max(q_list)
+                    encoded = np.exp(1j* (np.matmul(obs, self.s_hdvec[action])+self.bias[action]))
+                    # model_size = np.linalg.norm(self.model[action])/self.D
+                    # if model_size != 0:
+                    #     print(action, model_size)
+                    #    self.model[action] += self.lr * model_size * (y_true-y_pred) * encoded
+                    #else:
+                    self.model[action] += self.lr * (y_true-y_pred) * encoded
+                    #print(y_true-y_pred)
+
+    def new_feedback(self): # for stepwise model update
+        for iter in range(1):
+            if len(self.logs) < 15: #5 for acrobot
+                logs = self.logs
+            else:
+                logs = random.sample(self.logs, 15)
+            for k in range(1):
+                for log in logs:
+                    (obs, action, reward, next_obs) = log
+                    y_pred = self.value(action, obs)
+                    q_list = []
+                    for a_ in range(self.n_actions):
+                        q_list.append(self.value(a_, next_obs, True))
+                    y_true = reward + self.reward_decay*max(q_list)
+                    encoded = np.exp(1j* (np.matmul(obs, self.s_hdvec[action])+self.bias[action]))
+                    # model_size = np.linalg.norm(self.model[action])/self.D
+                    # if model_size != 0:
+                    #     print(action, model_size)
+                    #    self.model[action] += self.lr * model_size * (y_true-y_pred) * encoded
+                    #else:
+                    self.model[action] += self.lr * (y_true-y_pred) * encoded
+                    #print(y_true-y_pred)
 
 class Agent(BaseModel):
     def __init__(self, config, environment, sess):
@@ -36,6 +173,8 @@ class Agent(BaseModel):
         self.target_q_update_step = 100
         self.discount = 0.5
         self.double_q = True
+        self.qhd_model = QHD_Model(dimension=10_000, n_actions=60, n_obs=82, epsilon=1, epsilon_decay=0.995, minimum_epsilon=0.010,
+                                   reward_decay=0.9, mem=70, batch=20, lr=0.05)
         print("------------")
         print(self.double_q)
         print("------------")
@@ -80,11 +219,15 @@ class Agent(BaseModel):
         # ==========================
         #  Select actions
         # ======================
+        # print("===================================")
+        # print(s_t.shape)
+        # print("===================================")
         ep = 1/(step/1000000 + 1)
-        if random.random() < ep and test_ep == False:   # epsion to balance the exporation and exploition
+        if random.random() < ep and test_ep == False:   # epsilon to balance the exporation and exploition
             action = np.random.randint(60)
-        else:          
-            action =  self.q_action.eval({self.s_t:[s_t]})[0] 
+        else:    
+            action = np.argmax(self.qhd_model.q_values(s_t))       
+            # action =  self.q_action.eval({self.s_t:[s_t]})[0] 
         return action
     def observe(self, prestate, state, reward, action):
         # -----------
