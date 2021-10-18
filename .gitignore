@@ -2,5 +2,4 @@ __pycache__/*
 weight/*
 QHD Latest/*
 QHD Quick/*
-ddqn_benchmark.txt
-random_benchmark.txt
+*.txt
