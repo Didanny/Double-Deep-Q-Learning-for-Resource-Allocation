@@ -39,17 +39,15 @@ class QHD_Model(object):
         
         self.logs = [] # temp log for current episode
         self.episode_logs = [] # logs for past episodes
-        self.s_hdvec = []
-        self.bias = []
         self.model = []
+
         for a in range(n_actions):
-            tmp_hdvec = []
-            for n in range(self.n_obs):
-                tmp_hdvec.append(np.random.normal(0, 1, dimension))
-            tmp_hdvec = np.array(tmp_hdvec)
-            self.s_hdvec.append(tmp_hdvec)
-            self.bias.append(np.random.uniform(0,2*np.pi, size=dimension))
             self.model.append(np.zeros(dimension, dtype=complex))
+        self.s_hdvec = []
+        for n in range(self.n_obs):
+            self.s_hdvec.append(np.random.normal(0, 1, dimension))
+        self.bias = np.random.uniform(0,2*np.pi, size=dimension)
+
         self.s_hdvec = np.array(self.s_hdvec)
         self.bias = np.array(self.bias)
         self.model = np.array(self.model)
@@ -69,7 +67,13 @@ class QHD_Model(object):
             self.logs.pop(0)
 
     def update_delay_model(self):
-        self.delay_model = copy.deepcopy(self.model)
+        self.delay_model = self.model.detach().clone()
+
+    def save_model(self):
+        torch.save(self.model, 'model.pt')
+        torch.save(self.delay_model, 'delay_model.pt')
+        torch.save(self.bias, 'bias.pt')
+        torch.save(self.s_hdvec, 's_hdvec.pt')
     
     def choose_action(self, observation): # observation should be numpy ndarray
         if (random.random() <= self.epsilon):
@@ -89,11 +93,11 @@ class QHD_Model(object):
     
     def value(self, action, observation, delay=False):
         ## Encoding
-        encoded = torch.exp(1j* (observation @ self.s_hdvec[action])+self.bias[action])
+        encoded = torch.exp(1j* ((observation @ self.s_hdvec)+self.bias))
         if delay == True:
-            q_value = torch.real(torch.conj(encoded) @ self.delay_model[action]/self.D)
+            q_value = torch.real((torch.conj(encoded) @ self.delay_model[action])/self.D)
         else:
-            q_value = torch.real(torch.conj(encoded) @ self.model[action]/self.D)
+            q_value = torch.real((torch.conj(encoded) @ self.model[action])/self.D)
         return q_value
     
     def feedback(self):
@@ -163,14 +167,11 @@ class QHD_Model(object):
     def train_on_sample(self, obs, action, reward, next_obs):
         y_pred = self.value(action, obs)
         q_list = []
-        q_list = self.q_values(next_obs, True)
+        encoded = torch.exp(1j* ((obs @ self.s_hdvec)+self.bias))
+        encoded_ = torch.exp(1j* ((next_obs @ self.s_hdvec)+self.bias))
+        for a_ in range(self.n_actions):
+            q_list.append(torch.real((torch.conj(encoded_) @ self.delay_model[a_])/self.D))
         y_true = reward + self.reward_decay*max(q_list)
-        encoded = torch.exp(1j* ((obs @ self.s_hdvec[action])+self.bias[action]))
-        # model_size = np.linalg.norm(self.model[action])/self.D
-        # if model_size != 0:
-        #     print(action, model_size)
-        #    self.model[action] += self.lr * model_size * (y_true-y_pred) * encoded
-        #else:
         self.model[action] += self.lr * (y_true-y_pred) * encoded
         #print(y_true-y_pred)
         return y_true-y_pred, y_true
@@ -185,14 +186,15 @@ class Agent(BaseModel):
         self.memory = ReplayMemory(model_dir) 
         self.max_step = 100000
         self.train_steps = 10_000
-        self.batch_size = 10
+        self.batch_size = 2000
         self.RB_number = 20
-        self.num_vehicle = len(self.env.vehicles)
+        self.num_vehicle = 20
+        self.num_vehicle_train = 20
         print('-------------------------------------------')
         print(self.num_vehicle)
         print('-------------------------------------------')
         self.action_all_with_power = np.zeros([self.num_vehicle, 3, 2],dtype = 'int32')   # this is actions that taken by V2V links with power
-        self.action_all_with_power_training = np.zeros([20, 3, 2],dtype = 'int32')   # this is actions that taken by V2V links with power
+        self.action_all_with_power_training = np.zeros([self.num_vehicle_train, 3, 2],dtype = 'int32')   # this is actions that taken by V2V links with power
         self.reward = []
         self.learning_rate = 0.01
         self.learning_rate_minimum = 0.0001
@@ -202,7 +204,7 @@ class Agent(BaseModel):
         self.discount = 0.5
         self.double_q = True
         self.qhd_model = QHD_Model(dimension=10_000, n_actions=60, n_obs=82, epsilon=1, epsilon_decay=0.995, minimum_epsilon=0.010,
-                                   reward_decay=0.9, mem=70, batch=20, lr=0.05)
+                                   reward_decay=0.9, mem=70, batch=20, lr=0.035)
         print("------------")
         print(self.double_q)
         print("------------")
@@ -272,9 +274,10 @@ class Agent(BaseModel):
             if self.step % 50 == 0:
                 #print('Training')
                 l = self.q_learning_mini_batch_qhd()            # training a mini batch
+                self.qhd_model.save_model()
                 # self.save_weight_to_pkl()
             if self.step % self.target_q_update_step == self.target_q_update_step - 1:
-                #print("Update Target Q network:")
+                print("Update Target Q network:")
                 self.update_target_qhd_model()           # ?? what is the meaning ??
             return l
     def train(self):        
@@ -286,7 +289,7 @@ class Agent(BaseModel):
         number_big = 0
         mean_not_big = 0
         number_not_big = 0
-        self.env.new_random_game(20)
+        self.env.new_random_game(self.num_vehicle_train)
         for self.step in (range(0, self.train_steps)): # need more configuration
             if self.step == 0:                   # initialize set some varibles
                 num_game, self.update_count,ep_reward = 0, 0, 0.
@@ -296,14 +299,14 @@ class Agent(BaseModel):
             # prediction
             # action = self.predict(self.history.get())
             if (self.step % 2000 == 1):
-                self.env.new_random_game(20)
+                self.env.new_random_game(self.num_vehicle_train)
             print(self.step)
             state_old = self.get_state([0,0])
             #print("state", state_old)
             self.training = True
             for k in range(1):
                 if (self.step % 50 == 0 and self.step > 0):
-                    pbar = tqdm(total=len(self.env.vehicles))
+                    pbar = tqdm(total=self.num_vehicle_train)
                 for i in range(len(self.env.vehicles)):              
                     for j in range(3): 
                         state_old = self.get_state([i,j]) 
@@ -316,7 +319,7 @@ class Agent(BaseModel):
                         l = self.observe(state_old, state_new, reward_train, action)
                     if (self.step % 50 == 0 and self.step > 0):
                         pbar.set_description("Training Progress:")
-                        pbar.write("loss is {0}".format(l))
+                        # pbar.write("loss is {0}".format(l))
                         pbar.update()
             if (self.step % 2000 == 0) and (self.step > 0):
                 # testing 
@@ -333,7 +336,7 @@ class Agent(BaseModel):
                     test_sample = 200
                     Rate_list = []
                     print('test game idx:', game_idx)
-                    pbar = tqdm(total = test_sample)
+                    # pbar = tqdm(total = test_sample)
                     for k in range(test_sample):
                         action_temp = self.action_all_with_power.copy()
                         for i in range(len(self.env.vehicles)):
@@ -348,8 +351,8 @@ class Agent(BaseModel):
                                 reward, percent = self.env.act_asyn(action_temp) #self.action_all)            
                                 Rate_list.append(np.sum(reward))
                         #print("actions", self.action_all_with_power)
-                        pbar.set_description("Replay Progress:")
-                        pbar.update()
+                        # pbar.set_description("Replay Progress:")
+                        # pbar.update()
                     V2I_Rate_list[game_idx] = np.mean(np.asarray(Rate_list))
                     Fail_percent_list[game_idx] = percent
                     #print("action is", self.action_all_with_power)
@@ -617,7 +620,7 @@ def main(_):
     agent = Agent(config, Env, sess)
     #agent.play()
     agent.train()
-    agent.play()
+    # agent.play()
 
 if __name__ == '__main__':
     tf.app.run()
