@@ -209,7 +209,12 @@ class QHD_Model(object):
         y_true = reward + self.reward_decay * max_q_values
         # print("y_true: {0}".format(y_true.shape))
 
-        self.model[action] += (self.lr * (y_true-y_pred)).to(torch.cdouble) @ encoded
+        model_delta = (self.lr * (y_true-y_pred)).to(torch.cdouble) @ encoded
+        # print("model_delta: {0}".format(model_delta.shape))
+        # print(action[torch.where(action == 0)])
+
+        for a in a_:
+            self.model[a] += torch.sum(model_delta[torch.where(action == a)], dim=0)
         # print("t_: {0}".format(t_.shape))
         # print("model: {0}".format(self.model[action].shape))
 
