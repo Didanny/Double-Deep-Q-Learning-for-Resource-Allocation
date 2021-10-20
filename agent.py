@@ -399,7 +399,8 @@ class Agent(BaseModel):
                 # self.save_weight_to_pkl()
                 print ('The number of vehicle is ', len(self.env.vehicles))
                 print ('Mean of the V2I rate is that ', np.mean(V2I_Rate_list))
-                print('Mean of Fail percent is that ', np.mean(Fail_percent_list))                   
+                print('Mean of Fail percent is that ', np.mean(Fail_percent_list))          
+                self.qhd_model.save_model()         
                 #print('Test Reward is ', np.mean(test_result))
              
                   
