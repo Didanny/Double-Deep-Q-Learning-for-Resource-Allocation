@@ -88,16 +88,31 @@ class QHD_Model(object):
     def q_values(self, observation, delay=False):
         q_values = list()
         for action in range(self.n_actions):
-            q_values.append(self.value(action, observation, delay))
+            q_values.append(self.value_sample(action, observation, delay))
         return q_values
-    
-    def value(self, action, observation, delay=False):
+
+    def value_sample(self, action, observation, delay=False):
         ## Encoding
         encoded = torch.exp(1j* ((observation @ self.s_hdvec)+self.bias))
         if delay == True:
             q_value = torch.real((torch.conj(encoded) @ self.delay_model[action])/self.D)
         else:
             q_value = torch.real((torch.conj(encoded) @ self.model[action])/self.D)
+        return q_value
+    
+    def value(self, action, observation, delay=False):
+        ## Encoding
+        # print("action shape: {0}".format(action.shape))
+        # print(action)
+        # print("obs shape: {0}".format(observation.shape))
+        encoded = torch.exp(1j* ((observation @ self.s_hdvec)+self.bias))
+        # print("encoded shape: {0}".format(encoded.shape))
+        if delay == True:
+            q_value = torch.real((torch.conj(encoded) @ self.delay_model[action].t())/self.D)
+        else:
+            # print("tensor shape: {0}".format(torch.tensor([22,19,10,11]).shape))
+            # print("model shape: {0}".format(self.model[torch.tensor([22,19,10,11])].shape))
+            q_value = torch.real((torch.conj(encoded) @ self.model[action].t())/self.D)
         return q_value
     
     def feedback(self):
@@ -176,6 +191,28 @@ class QHD_Model(object):
         #print(y_true-y_pred)
         return y_true-y_pred, y_true
 
+    def train_on_batch(self, obs, action, reward, next_obs):
+        y_pred = self.value(action, obs)
+        
+        encoded = torch.exp(1j* ((obs @ self.s_hdvec)+self.bias))
+        encoded_ = torch.exp(1j* ((next_obs @ self.s_hdvec)+self.bias))
+        # print("encoded: {0}, encoded_: {1}".format(encoded.shape, encoded_.shape))
+
+        a_ = torch.tensor([x for x in range(self.n_actions)])
+        # print("a_: {0}".format(a_))
+
+        q_values = torch.real((torch.conj(encoded_) @ self.delay_model[a_].t())/self.D)
+        max_q_values, _ = torch.max(q_values, dim=1)
+        # print("q_values: {0}".format(q_values.shape))
+        # print("q_values max: {0}".format(max_q_values.shape))
+
+        y_true = reward + self.reward_decay * max_q_values
+        # print("y_true: {0}".format(y_true.shape))
+
+        self.model[action] += (self.lr * (y_true-y_pred)).to(torch.cdouble) @ encoded
+        # print("t_: {0}".format(t_.shape))
+        # print("model: {0}".format(self.model[action].shape))
+
 class Agent(BaseModel):
     def __init__(self, config, environment, sess):
         self.sess = sess
@@ -185,7 +222,7 @@ class Agent(BaseModel):
         model_dir = './Model/a.model'
         self.memory = ReplayMemory(model_dir) 
         self.max_step = 100000
-        self.train_steps = 10_000
+        self.train_steps = 10_001
         self.batch_size = 2000
         self.RB_number = 20
         self.num_vehicle = 20
@@ -369,6 +406,11 @@ class Agent(BaseModel):
     def q_learning_mini_batch_qhd(self):
 
         s_t, s_t_plus_1, action, reward = self.memory.sample()
+        # print(reward)
+        # print("Batch")
+        self.qhd_model.train_on_batch(torch.from_numpy(s_t).to(torch.float64), torch.from_numpy(action).to(torch.long), torch.from_numpy(reward).to(torch.float64), torch.from_numpy(s_t_plus_1).to(torch.float64))
+        return 0
+        # y_pred = self.qhd_model.value(torch.from_numpy(action).to(torch.long), torch.from_numpy(s_t).to(torch.float64))
         # print('s_t shape:')
         # print(s_t.shape)
         # print('s_t_plus_1 shape:')
@@ -378,27 +420,21 @@ class Agent(BaseModel):
         # print('reward shape:')
         # print(reward.shape)
 
-        t = time.time()
-        losses = torch.zeros(self.batch_size)
-        qs = torch.zeros(self.batch_size)
-        if self.double_q:
-            # print('s_t_plus_1 Type:')
-            # print(torch.from_numpy(s_t_plus_1[0]).shape)
-            # pbar = tqdm(total=self.batch_size)
-            for i in range(self.batch_size):
+        # t = time.time()
+        # losses = torch.zeros(self.batch_size)
+        # qs = torch.zeros(self.batch_size)
+        # if self.double_q:
 
-                losses[i], qs[i] = self.qhd_model.train_on_sample(torch.from_numpy(s_t[i]).to(torch.float64), action[i], reward[i], torch.from_numpy(s_t_plus_1[i]).to(torch.float64))
-            
-                # pbar.set_description("Training Progress:")
-                # pbar.update()
+        #     for i in range(self.batch_size):
 
-            # print('loss is ', torch.mean(losses))
-            self.total_loss += torch.mean(losses)
-            self.total_q += torch.mean(qs)
-            self.update_count += 1
-            return torch.mean(losses)
-        else:
-            pass
+        #         losses[i], qs[i] = self.qhd_model.train_on_sample(torch.from_numpy(s_t[i]).to(torch.float64), action[i], reward[i], torch.from_numpy(s_t_plus_1[i]).to(torch.float64))
+
+        #     self.total_loss += torch.mean(losses)
+        #     self.total_q += torch.mean(qs)
+        #     self.update_count += 1
+        #     return torch.mean(losses)
+        # else:
+        #     pass
 
             
     def q_learning_mini_batch(self):
