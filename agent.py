@@ -74,6 +74,12 @@ class QHD_Model(object):
         torch.save(self.delay_model, 'delay_model.pt')
         torch.save(self.bias, 'bias.pt')
         torch.save(self.s_hdvec, 's_hdvec.pt')
+
+    def load_model(self):
+        self.model = torch.load('model.pt')
+        self.delay_model = torch.load('delay_model.pt')
+        self.bias = torch.load('bias.pt')
+        self.s_hdvec = torch.load('s_hdvec.pt')
     
     def choose_action(self, observation): # observation should be numpy ndarray
         if (random.random() <= self.epsilon):
@@ -559,10 +565,11 @@ class Agent(BaseModel):
         self.update_target_q_network()   
       
     def play(self, n_step = 100, n_episode = 100, test_ep = None, render = False):
-        number_of_game = 100
+        number_of_game = 20
         V2I_Rate_list = np.zeros(number_of_game)
         Fail_percent_list = np.zeros(number_of_game)
-        self.load_weight_from_pkl()
+        # self.load_weight_from_pkl()
+        self.qhd_model.load_model()
         self.training = False
 
 
